@@ -51,4 +51,13 @@ describe('統合解析', () => {
     expect(executeAnalyzeRequest(request)).toEqual(direct)
     vi.useRealTimers()
   })
+
+  it('正規化エラーがある地盤では有効そうな解析結果を返さず中止する', () => {
+    const project = createDefaultProject()
+    project.ground.layers[1]!.topDepthM += 0.5
+
+    expect(() => analyzeProject(project, null, 'invalid-ground')).toThrow(
+      /地盤モデルを正規化できません.*連続していません/,
+    )
+  })
 })

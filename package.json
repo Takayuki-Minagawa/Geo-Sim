@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "schema:generate": "node scripts/generate-schema-validator.mjs",
+    "schema:check": "npm run schema:generate && git diff --exit-code -- src/generated/",
     "predev": "npm run schema:generate",
     "dev": "vite",
     "prebuild": "npm run schema:generate",

@@ -4,6 +4,7 @@ const EPSILON = 1e-9
 
 export interface NormalizedGround {
   ground: GroundModel
+  clippedGround: GroundModel
   messages: AnalysisMessage[]
 }
 
@@ -13,6 +14,16 @@ function uniqueSorted(values: number[]): number[] {
 
 function validateInputLayers(layers: GroundLayer[]): AnalysisMessage[] {
   const messages: AnalysisMessage[] = []
+  if (layers.length === 0) {
+    return [
+      {
+        code: 'LAYER_MODEL_EMPTY',
+        severity: 'error',
+        path: 'ground.layers',
+        message: '工学的基盤より上に解析対象の地層がありません',
+      },
+    ]
+  }
   let previousBottom = 0
   for (const [index, layer] of layers.entries()) {
     if (layer.bottomDepthM <= layer.topDepthM + EPSILON) {
@@ -37,9 +48,21 @@ function validateInputLayers(layers: GroundLayer[]): AnalysisMessage[] {
 }
 
 export function normalizeGroundModel(model: GroundModel): NormalizedGround {
-  const messages = validateInputLayers(model.layers)
+  const bedrockDepthM = model.engineeringBedrock.depthM
+  const relevantLayers = model.layers
+    .filter((layer) => layer.topDepthM < bedrockDepthM)
+    .map((layer) => ({
+      ...structuredClone(layer),
+      bottomDepthM: Math.min(layer.bottomDepthM, bedrockDepthM),
+    }))
+  const clippedGround = { ...structuredClone(model), layers: relevantLayers }
+  const messages = validateInputLayers(relevantLayers)
   if (messages.some((message) => message.severity === 'error')) {
-    return { ground: structuredClone(model), messages }
+    return {
+      ground: structuredClone(clippedGround),
+      clippedGround,
+      messages,
+    }
   }
 
   const boundaries = uniqueSorted([
@@ -51,8 +74,10 @@ export function normalizeGroundModel(model: GroundModel): NormalizedGround {
   ]).filter((value) => value >= 0 && value <= model.engineeringBedrock.depthM)
 
   const normalized: GroundLayer[] = []
-  for (const layer of model.layers) {
-    const bottom = Math.min(layer.bottomDepthM, model.engineeringBedrock.depthM)
+  for (const layer of relevantLayers) {
+    const bottom = layer.bottomDepthM
+    if (bottom <= layer.topDepthM + EPSILON) continue
+
     const cuts = uniqueSorted([
       layer.topDepthM,
       bottom,
@@ -70,12 +95,18 @@ export function normalizeGroundModel(model: GroundModel): NormalizedGround {
         topDepthM,
         bottomDepthM,
         improved:
-          model.improvementDepthM !== undefined && bottomDepthM <= model.improvementDepthM + EPSILON,
+          Boolean(layer.improved) ||
+          (model.improvementDepthM !== undefined &&
+            bottomDepthM <= model.improvementDepthM + EPSILON),
       })
     }
   }
 
-  if (normalized.at(-1)?.bottomDepthM !== model.engineeringBedrock.depthM) {
+  const normalizedBottomDepthM = normalized.at(-1)?.bottomDepthM
+  if (
+    normalizedBottomDepthM === undefined ||
+    Math.abs(normalizedBottomDepthM - model.engineeringBedrock.depthM) > EPSILON
+  ) {
     messages.push({
       code: 'LAYERS_DO_NOT_REACH_BEDROCK',
       severity: 'warning',
@@ -85,6 +116,7 @@ export function normalizeGroundModel(model: GroundModel): NormalizedGround {
 
   return {
     ground: { ...structuredClone(model), layers: normalized },
+    clippedGround,
     messages,
   }
 }

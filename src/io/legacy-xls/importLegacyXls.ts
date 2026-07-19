@@ -27,11 +27,6 @@ function numericInput(sheet: WorkSheet, address: string): number | undefined {
   return undefined
 }
 
-function displayedNumber(sheet: WorkSheet, address: string): number | undefined {
-  const cell = sheetCell(sheet, address)
-  return typeof cell?.v === 'number' && Number.isFinite(cell.v) ? cell.v : undefined
-}
-
 function textInput(sheet: WorkSheet, address: string): string | undefined {
   const value = inputValue(sheet, address)
   if (
@@ -135,19 +130,32 @@ export function importLegacyWorkbook(workbook: WorkBook, fileName = '地盤シ�
 
   const bedrockDepth = numericInput(sheet, 'H29') ?? project.ground.layers.at(-1)?.bottomDepthM
   const bedrockDensity = numericInput(sheet, 'L29')
-  const bedrockVs = numericInput(sheet, 'Q29') ?? displayedNumber(sheet, 'Q29')
-  if (bedrockDepth === undefined || bedrockDensity === undefined || bedrockVs === undefined) {
+  const bedrockVs = numericInput(sheet, 'Q29')
+  if (bedrockVs === undefined && sheetCell(sheet, 'Q29')?.f) {
+    messages.push({
+      code: 'LEGACY_BEDROCK_VS_FORMULA_SKIPPED',
+      severity: 'warning',
+      message: '工学的基盤Vsの数式キャッシュ値は採用しませんでした。Vsを手入力してください',
+    })
+  }
+  const bedrockComplete =
+    bedrockDepth !== undefined &&
+    bedrockDepth > 0 &&
+    bedrockDensity !== undefined &&
+    bedrockDensity > 0 &&
+    bedrockVs !== undefined &&
+    bedrockVs > 0
+  project.ground.engineeringBedrock = {
+    depthM: bedrockDepth ?? 0,
+    densityKgM3: bedrockDensity === undefined ? 0 : bedrockDensity * 1000,
+    vsMps: bedrockVs ?? 0,
+  }
+  if (!bedrockComplete) {
     messages.push({
       code: 'LEGACY_BEDROCK_INCOMPLETE',
       severity: 'error',
-      message: '工学的基盤の深さ・密度・Vsを旧XLSから取得できませんでした',
+      message: '工学的基盤の深さ・密度・Vsを旧XLSから取得できないか、値が不正です。Vsなど不足値を手入力してください',
     })
-  } else {
-    project.ground.engineeringBedrock = {
-      depthM: bedrockDepth,
-      densityKgM3: bedrockDensity * 1000,
-      vsMps: bedrockVs,
-    }
   }
 
   if (project.ground.layers.length === 0 || project.ground.nValues.length === 0) {
@@ -159,7 +167,7 @@ export function importLegacyWorkbook(workbook: WorkBook, fileName = '地盤シ�
   }
 
   const normalized = normalizeGroundModel(project.ground)
-  project.ground = normalized.ground
+  project.ground = normalized.clippedGround
   messages.push(...normalized.messages)
   return { project, messages }
 }

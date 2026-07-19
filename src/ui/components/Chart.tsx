@@ -29,21 +29,30 @@ interface ChartProps {
 
 export function Chart({ option, ariaLabel, height = 360 }: ChartProps) {
   const ref = useRef<HTMLDivElement>(null)
+  const chartRef = useRef<ReturnType<typeof init> | null>(null)
 
   useEffect(() => {
     if (!ref.current) return
     const chart = init(ref.current, undefined, { renderer: 'svg' })
-    chart.setOption({
-      animation: false,
-      aria: { enabled: true, decal: { show: true } },
-      ...option,
-    })
+    chartRef.current = chart
     const resize = new ResizeObserver(() => chart.resize())
     resize.observe(ref.current)
     return () => {
       resize.disconnect()
       chart.dispose()
+      chartRef.current = null
     }
+  }, [])
+
+  useEffect(() => {
+    chartRef.current?.setOption(
+      {
+        animation: false,
+        aria: { enabled: true, decal: { show: true } },
+        ...option,
+      },
+      { notMerge: true },
+    )
   }, [option])
 
   return <div ref={ref} role="img" aria-label={ariaLabel} style={{ width: '100%', height }} />
