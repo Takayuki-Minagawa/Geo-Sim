@@ -1,0 +1,14 @@
+# Local source workbook may contain project or personal information.
+地盤シート.xls
+
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+
