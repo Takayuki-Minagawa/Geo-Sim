@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/schemas/jiban-project-1.0.0.json",
+  "title": "Jiban Project",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "appVersion", "project", "provenance", "method", "ground", "analysisSettings"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "appVersion": { "type": "string", "minLength": 1 },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "location": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
+            "longitude": { "type": "number", "minimum": -180, "maximum": 180 }
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceType"],
+      "properties": {
+        "sourceType": { "enum": ["manual", "jiban-json", "legacy-xls", "csv"] },
+        "sourceFileName": { "type": "string" },
+        "sourceSha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+        "importedAt": { "type": "string" }
+      }
+    },
+    "method": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gs", "legalBasisCheckedOn", "liquefaction"],
+      "properties": {
+        "gs": { "enum": ["jp-mlit-kokuji-1457-current", "legacy-workbook-compat"] },
+        "legalBasisCheckedOn": { "type": "string" },
+        "liquefaction": { "const": "legacy-aij-derived-screening-v1" }
+      }
+    },
+    "ground": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["groundwaterDepthM", "nValues", "layers", "engineeringBedrock"],
+      "properties": {
+        "groundwaterDepthM": { "type": "number", "minimum": 0, "maximum": 200 },
+        "improvementDepthM": { "type": "number", "minimum": 0, "maximum": 200 },
+        "nValues": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["depthM", "n"],
+            "properties": {
+              "depthM": { "type": "number", "minimum": 0, "maximum": 1000 },
+              "n": { "type": "number", "minimum": 0, "maximum": 1000 },
+              "soilName": { "type": "string", "maxLength": 100 }
+            }
+          }
+        },
+        "layers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 500,
+          "items": { "$ref": "#/$defs/layer" }
+        },
+        "engineeringBedrock": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["depthM", "densityKgM3", "vsMps"],
+          "properties": {
+            "depthM": { "type": "number", "exclusiveMinimum": 0, "maximum": 1000 },
+            "densityKgM3": { "type": "number", "minimum": 500, "maximum": 5000 },
+            "vsMps": { "type": "number", "exclusiveMinimum": 0, "maximum": 10000 },
+            "thicknessM": { "type": "number", "exclusiveMinimum": 0, "maximum": 1000 },
+            "inclinationDeg": { "type": "number", "minimum": 0, "maximum": 90 },
+            "investigationRadiusM": { "type": "number", "minimum": 0, "maximum": 100000 }
+          }
+        }
+      }
+    },
+    "analysisSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gs", "liquefactionCases", "responseSpectrumDampingRatio"],
+      "properties": {
+        "gs": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "groundType", "groundTypeBasis", "regionFactorZ", "effectiveStrainFactor", "relativeTolerance", "absoluteTolerance", "maxIterations"],
+          "properties": {
+            "mode": { "enum": ["damage-simplified", "safety-simplified", "safety-precise", "legacy-damage-precise", "legacy-safety-precise"] },
+            "groundType": { "enum": [1, 2, 3] },
+            "groundTypeBasis": { "type": "string", "minLength": 1, "maxLength": 2000 },
+            "regionFactorZ": { "type": "number", "exclusiveMinimum": 0, "maximum": 2 },
+            "effectiveStrainFactor": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+            "relativeTolerance": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+            "absoluteTolerance": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+            "maxIterations": { "type": "integer", "minimum": 1, "maximum": 500 }
+          }
+        },
+        "liquefactionCases": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "peakAccelerationGal", "magnitude"],
+            "properties": {
+              "id": { "enum": ["damage-150gal", "safety-350gal"] },
+              "peakAccelerationGal": { "type": "number", "exclusiveMinimum": 0, "maximum": 5000 },
+              "magnitude": { "type": "number", "exclusiveMinimum": 0, "maximum": 12 }
+            }
+          }
+        },
+        "responseSpectrumDampingRatio": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+      }
+    }
+  },
+  "$defs": {
+    "layer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "topDepthM", "bottomDepthM", "soilName", "soilClass", "geologicAge", "densityKgM3"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "topDepthM": { "type": "number", "minimum": 0, "maximum": 1000 },
+        "bottomDepthM": { "type": "number", "exclusiveMinimum": 0, "maximum": 1000 },
+        "soilName": { "type": "string", "maxLength": 100 },
+        "soilClass": { "enum": ["clay", "silt", "sand", "fine-sand", "medium-sand", "coarse-sand", "gravelly-sand", "gravel", "surface-soil", "fill", "organic", "rock", "other"] },
+        "geologicAge": { "enum": ["alluvium", "diluvium", "unknown"] },
+        "densityKgM3": { "type": "number", "minimum": 500, "maximum": 5000 },
+        "finesPercent": { "type": "number", "minimum": 0, "maximum": 100 },
+        "nValue": { "type": "number", "minimum": 0, "maximum": 1000 },
+        "vsMps": { "type": "number", "exclusiveMinimum": 0, "maximum": 10000 },
+        "vsSource": { "enum": ["input", "estimated", "default", "measured", "legacy"] },
+        "vsProvenance": { "$ref": "#/$defs/testProvenance" },
+        "modulusCurve": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["strain", "modulusRatio", "dampingRatio"],
+            "properties": {
+              "strain": { "type": "number", "exclusiveMinimum": 0 },
+              "modulusRatio": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+              "dampingRatio": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          }
+        },
+        "modulusCurveProvenance": { "$ref": "#/$defs/testProvenance" },
+        "improved": { "type": "boolean" }
+      }
+    },
+    "testProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference"],
+      "properties": {
+        "reference": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "method": { "type": "string", "maxLength": 200 },
+        "testedOn": { "type": "string", "maxLength": 50 },
+        "location": { "type": "string", "maxLength": 200 }
+      }
+    }
+  }
+}

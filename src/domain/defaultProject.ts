@@ -1,0 +1,113 @@
+import type { JibanProject } from './types'
+
+export const APP_VERSION = '0.1.0'
+
+export function createDefaultProject(): JibanProject {
+  return {
+    schemaVersion: '1.0.0',
+    appVersion: APP_VERSION,
+    project: { name: '新規案件' },
+    provenance: { sourceType: 'manual' },
+    method: {
+      gs: 'jp-mlit-kokuji-1457-current',
+      legalBasisCheckedOn: '2026-07-19',
+      liquefaction: 'legacy-aij-derived-screening-v1',
+    },
+    ground: {
+      groundwaterDepthM: 0.7,
+      nValues: [
+        { depthM: 1, n: 1, soilName: '表土' },
+        { depthM: 2, n: 3 },
+        { depthM: 3, n: 16 },
+        { depthM: 4, n: 19 },
+        { depthM: 5, n: 10 },
+        { depthM: 6, n: 4 },
+        { depthM: 7, n: 3 },
+        { depthM: 8, n: 3 },
+        { depthM: 9, n: 3 },
+        { depthM: 10, n: 3 },
+        { depthM: 11, n: 5 },
+        { depthM: 12, n: 6 },
+        { depthM: 13, n: 7 },
+        { depthM: 14, n: 26 },
+        { depthM: 15, n: 30 },
+        { depthM: 16, n: 50 },
+      ],
+      layers: [
+        {
+          id: 'L1',
+          topDepthM: 0,
+          bottomDepthM: 1.4,
+          soilName: '表土',
+          soilClass: 'surface-soil',
+          geologicAge: 'alluvium',
+          densityKgM3: 1300,
+          finesPercent: 70,
+        },
+        {
+          id: 'L2',
+          topDepthM: 1.4,
+          bottomDepthM: 4,
+          soilName: 'シルト質粘土',
+          soilClass: 'clay',
+          geologicAge: 'alluvium',
+          densityKgM3: 1600,
+          finesPercent: 85,
+        },
+        {
+          id: 'L3',
+          topDepthM: 4,
+          bottomDepthM: 5.6,
+          soilName: '粘土',
+          soilClass: 'clay',
+          geologicAge: 'alluvium',
+          densityKgM3: 1500,
+          finesPercent: 80,
+        },
+        {
+          id: 'L4',
+          topDepthM: 5.6,
+          bottomDepthM: 14.5,
+          soilName: '粘土',
+          soilClass: 'clay',
+          geologicAge: 'alluvium',
+          densityKgM3: 1500,
+          finesPercent: 80,
+        },
+        {
+          id: 'L5',
+          topDepthM: 14.5,
+          bottomDepthM: 16,
+          soilName: '粘土質シルト',
+          soilClass: 'silt',
+          geologicAge: 'alluvium',
+          densityKgM3: 1600,
+          finesPercent: 80,
+        },
+      ],
+      engineeringBedrock: {
+        depthM: 16,
+        densityKgM3: 2000,
+        vsMps: 400,
+        thicknessM: 5,
+      },
+    },
+    analysisSettings: {
+      gs: {
+        mode: 'safety-simplified',
+        groundType: 2,
+        groundTypeBasis: '利用者入力（要根拠確認）',
+        regionFactorZ: 1,
+        effectiveStrainFactor: 0.65,
+        relativeTolerance: 0.0001,
+        absoluteTolerance: 1e-6,
+        maxIterations: 50,
+      },
+      liquefactionCases: [
+        { id: 'damage-150gal', peakAccelerationGal: 150, magnitude: 7 },
+        { id: 'safety-350gal', peakAccelerationGal: 350, magnitude: 7.5 },
+      ],
+      responseSpectrumDampingRatio: 0.05,
+    },
+  }
+}
