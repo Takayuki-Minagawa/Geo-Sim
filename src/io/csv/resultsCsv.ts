@@ -1,5 +1,6 @@
 import Papa from 'papaparse'
 import type { AnalysisResult } from '../../domain/types'
+import { safeCsvText } from './csv'
 
 function csv(rows: readonly (readonly (string | number | boolean)[])[]): string {
   return `\uFEFF${Papa.unparse(rows.map((row) => [...row]), { newline: '\r\n' })}`
@@ -53,10 +54,10 @@ export function exportLiquefactionResultCsv(result: AnalysisResult): string {
     ],
     ...result.liquefaction.flatMap((caseResult) =>
       caseResult.layers.map((layer) => [
-        caseResult.caseId,
+        safeCsvText(caseResult.caseId),
         caseResult.peakAccelerationGal,
         caseResult.magnitude,
-        layer.layerId,
+        safeCsvText(layer.layerId),
         layer.topDepthM,
         layer.bottomDepthM,
         layer.centerDepthM,
@@ -69,7 +70,7 @@ export function exportLiquefactionResultCsv(result: AnalysisResult): string {
         layer.cyclicStrainPercent,
         layer.dcyContributionCm,
         layer.plContribution,
-        layer.reason ?? '',
+        safeCsvText(layer.reason ?? ''),
       ]),
     ),
   ])

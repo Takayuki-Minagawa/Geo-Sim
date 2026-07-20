@@ -11,6 +11,8 @@ import type {
   SoilClass,
 } from './domain/types'
 import { exportLayersCsv, exportNValuesCsv, importLayersCsv, importNValuesCsv } from './io/csv/csv'
+import { detectCsvKind } from './io/csv/detectCsvKind'
+import type { CsvKind } from './io/csv/detectCsvKind'
 import { exportMotionCsv, importMotionCsv } from './io/csv/motionCsv'
 import { exportModulusCurveCsv, parseModulusCurveCsv } from './io/csv/modulusCurveCsv'
 import {
@@ -19,7 +21,8 @@ import {
   exportMotionSpectrumCsv,
 } from './io/csv/resultsCsv'
 import { downloadTextFile } from './io/download'
-import { hashProject, parseProjectJson, serializeProject, serializeResultBundle, sha256Buffer, sha256Text } from './io/json/projectJson'
+import { assertValidProject, hashProject, parseProjectJson, serializeProject, serializeResultBundle, sha256Buffer } from './io/json/projectJson'
+import { decodeUploadedText, readUploadedText } from './io/textEncoding'
 import { analyzeInWorker } from './worker/workerClient'
 import { Chart } from './ui/components/Chart'
 import { Metric } from './ui/components/Metric'
@@ -57,6 +60,23 @@ function Panel({ title, eyebrow, children }: { title: string; eyebrow?: string; 
 
 function format(value: number | undefined, digits = 3): string {
   return value === undefined || !Number.isFinite(value) ? '—' : value.toFixed(digits)
+}
+
+function encodingMessages(warnings: string[]): AnalysisMessage[] {
+  return warnings.map((message, index) => ({
+    code: index === 0 ? 'FILE_ENCODING_DETECTED' : `FILE_ENCODING_WARNING_${index + 1}`,
+    severity: message.includes('U+FFFD') ? 'warning' : 'info',
+    message,
+  }))
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'name' in error &&
+    error.name === 'AbortError'
+  )
 }
 
 function ModulusCurveEditor({
@@ -103,6 +123,36 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState(0)
   const cancelRef = useRef<(() => void) | null>(null)
+  const inputRevisionRef = useRef(0)
+
+  const invalidateResult = useCallback(() => {
+    inputRevisionRef.current += 1
+    setResult(null)
+  }, [])
+
+  const replaceProject = useCallback(
+    (nextProject: JibanProject) => {
+      invalidateResult()
+      setProject(nextProject)
+    },
+    [invalidateResult],
+  )
+
+  const updateProject = useCallback(
+    (update: (draft: JibanProject) => void) => {
+      invalidateResult()
+      setProject((current) => cloneUpdate(current, update))
+    },
+    [invalidateResult],
+  )
+
+  const replaceMotion = useCallback(
+    (nextMotion: MotionRecord) => {
+      invalidateResult()
+      setMotion(nextMotion)
+    },
+    [invalidateResult],
+  )
 
   const allMessages = useMemo(
     () => [...messages, ...(result?.messages ?? []), ...(result?.gs.messages ?? [])],
@@ -110,18 +160,20 @@ export default function App() {
   )
 
   const importFile = useCallback(
-    async (file: File) => {
+    async (file: File, forcedCsvKind?: CsvKind) => {
       setMessages([])
       try {
         const lower = file.name.toLowerCase()
         if (lower.endsWith('.json')) {
-          const text = await file.text()
+          const buffer = await file.arrayBuffer()
+          const decoded = decodeUploadedText(buffer)
+          const text = decoded.text
           const imported = parseProjectJson(text)
           imported.provenance.sourceType = 'jiban-json'
           imported.provenance.sourceFileName = file.name
-          imported.provenance.sourceSha256 = await sha256Text(text)
-          setProject(imported)
-          setResult(null)
+          imported.provenance.sourceSha256 = await sha256Buffer(buffer)
+          replaceProject(imported)
+          setMessages(encodingMessages(decoded.warnings))
           return
         }
         if (lower.endsWith('.xls') || lower.endsWith('.xlsx')) {
@@ -129,31 +181,31 @@ export default function App() {
           const { importLegacyXls } = await import('./io/legacy-xls/importLegacyXls')
           const imported = importLegacyXls(buffer, file.name)
           imported.project.provenance.sourceSha256 = await sha256Buffer(buffer)
-          setProject(imported.project)
+          replaceProject(imported.project)
           setMessages(imported.messages)
-          setResult(null)
           return
         }
         if (lower.endsWith('.csv')) {
-          const text = await file.text()
-          if (tab === 'motion') {
-            setMotion(importMotionCsv(text, file.name, motionUnit))
-          } else if (file.name.includes('layer')) {
-            setProject((current) =>
-              cloneUpdate(current, (draft) => {
-                draft.ground.layers = importLayersCsv(text)
-                draft.provenance = { sourceType: 'csv', sourceFileName: file.name }
-              }),
-            )
+          const decoded = await readUploadedText(file)
+          const kind = forcedCsvKind ?? detectCsvKind(decoded.text)
+          if (kind === 'motion') {
+            replaceMotion(importMotionCsv(decoded.text, file.name, motionUnit))
+          } else if (kind === 'layers') {
+            const importedProject = cloneUpdate(project, (draft) => {
+              draft.ground.layers = importLayersCsv(decoded.text)
+              draft.provenance = { sourceType: 'csv', sourceFileName: file.name }
+            })
+            assertValidProject(importedProject)
+            replaceProject(importedProject)
           } else {
-            setProject((current) =>
-              cloneUpdate(current, (draft) => {
-                draft.ground.nValues = importNValuesCsv(text)
-                draft.provenance = { sourceType: 'csv', sourceFileName: file.name }
-              }),
-            )
+            const importedProject = cloneUpdate(project, (draft) => {
+              draft.ground.nValues = importNValuesCsv(decoded.text)
+              draft.provenance = { sourceType: 'csv', sourceFileName: file.name }
+            })
+            assertValidProject(importedProject)
+            replaceProject(importedProject)
           }
-          setResult(null)
+          setMessages(encodingMessages(decoded.warnings))
           return
         }
         throw new Error('対応形式は .jiban.json / .xls / .xlsx / .csv です')
@@ -167,7 +219,7 @@ export default function App() {
         ])
       }
     },
-    [motionUnit, tab],
+    [motionUnit, project, replaceMotion, replaceProject],
   )
 
   const onFileChange = useCallback(
@@ -179,7 +231,17 @@ export default function App() {
     [importFile],
   )
 
+  const onMotionFileChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0]
+      if (file) void importFile(file, 'motion')
+      event.target.value = ''
+    },
+    [importFile],
+  )
+
   const runAnalysis = useCallback(async () => {
+    const inputRevision = inputRevisionRef.current
     setBusy(true)
     setProgress(0)
     setMessages([])
@@ -188,9 +250,29 @@ export default function App() {
       const task = analyzeInWorker(project, motion, inputSha256, setProgress)
       cancelRef.current = task.cancel
       const nextResult = await task.promise
+      if (inputRevisionRef.current !== inputRevision) {
+        setMessages([
+          {
+            code: 'ANALYSIS_INPUT_CHANGED',
+            severity: 'warning',
+            message: '解析中に入力が変更されたため、完了した結果を破棄しました。再解析してください。',
+          },
+        ])
+        return
+      }
       setResult(nextResult)
       setTab('gs')
     } catch (error) {
+      if (isAbortError(error)) {
+        setMessages([
+          {
+            code: 'ANALYSIS_CANCELLED',
+            severity: 'info',
+            message: '解析を取り消しました。',
+          },
+        ])
+        return
+      }
       setMessages([
         {
           code: 'ANALYSIS_FAILED',
@@ -205,51 +287,88 @@ export default function App() {
   }, [motion, project])
 
   const setLayer = useCallback((index: number, patch: Partial<GroundLayer>) => {
-    setProject((current) =>
-      cloneUpdate(current, (draft) => {
-        Object.assign(draft.ground.layers[index]!, patch)
-      }),
-    )
-    setResult(null)
-  }, [])
+    updateProject((draft) => {
+      Object.assign(draft.ground.layers[index]!, patch)
+    })
+  }, [updateProject])
 
   const setGroundValue = useCallback(
     (key: 'groundwaterDepthM' | 'improvementDepthM', value: number | undefined) => {
-      setProject((current) =>
-        cloneUpdate(current, (draft) => {
-          if (key === 'groundwaterDepthM' && value !== undefined) {
-            draft.ground.groundwaterDepthM = value
-          } else if (key === 'improvementDepthM') {
-            draft.ground.improvementDepthM = value
-          }
-        }),
-      )
-      setResult(null)
+      updateProject((draft) => {
+        if (key === 'groundwaterDepthM' && value !== undefined) {
+          draft.ground.groundwaterDepthM = value
+        } else if (key === 'improvementDepthM') {
+          draft.ground.improvementDepthM = value
+        }
+      })
     },
-    [],
+    [updateProject],
   )
 
   const setBedrockValue = useCallback(
     (key: keyof JibanProject['ground']['engineeringBedrock'], value: number | undefined) => {
-      setProject((current) =>
-        cloneUpdate(current, (draft) => {
-          if (value === undefined) {
-            if (
-              key === 'thicknessM' ||
-              key === 'inclinationDeg' ||
-              key === 'investigationRadiusM'
-            ) {
-              delete draft.ground.engineeringBedrock[key]
-            }
-            return
+      updateProject((draft) => {
+        if (value === undefined) {
+          if (
+            key === 'thicknessM' ||
+            key === 'inclinationDeg' ||
+            key === 'investigationRadiusM'
+          ) {
+            delete draft.ground.engineeringBedrock[key]
           }
-          draft.ground.engineeringBedrock[key] = value
-        }),
-      )
-      setResult(null)
+          return
+        }
+        draft.ground.engineeringBedrock[key] = value
+      })
     },
-    [],
+    [updateProject],
   )
+
+  const saveProjectJson = useCallback(() => {
+    try {
+      downloadTextFile(
+        `${project.project.name}.jiban.json`,
+        serializeProject(project),
+        'application/json',
+      )
+    } catch (error) {
+      setMessages([
+        {
+          code: 'PROJECT_EXPORT_FAILED',
+          severity: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      ])
+    }
+  }, [project])
+
+  const saveResultJson = useCallback(async () => {
+    if (!result) return
+    try {
+      const currentInputSha256 = await hashProject(project)
+      if (currentInputSha256 !== result.inputSha256) {
+        throw new Error('現在の入力と解析結果が一致しません。再解析してください。')
+      }
+      downloadTextFile(
+        `${project.project.name}-result.json`,
+        serializeResultBundle(project, result),
+        'application/json',
+      )
+    } catch (error) {
+      setMessages([
+        {
+          code: 'RESULT_EXPORT_FAILED',
+          severity: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      ])
+    }
+  }, [project, result])
+
+  const nValueOption = useMemo(() => nValueChartOption(project.ground), [project.ground])
+  const gsOption = useMemo(() => gsChartOption(result), [result])
+  const spectrumOption = useMemo(() => spectrumChartOption(result), [result])
+  const motionOption = useMemo(() => motionChartOption(motion), [motion])
 
   return (
     <div className="app-shell">
@@ -305,11 +424,9 @@ export default function App() {
                   <input
                     value={project.project.name}
                     onChange={(event) =>
-                      setProject((current) =>
-                        cloneUpdate(current, (draft) => {
-                          draft.project.name = event.target.value
-                        }),
-                      )
+                      updateProject((draft) => {
+                        draft.project.name = event.target.value
+                      })
                     }
                   />
                 </label>
@@ -322,11 +439,9 @@ export default function App() {
                     type="number"
                     value={project.analysisSettings.gs.regionFactorZ}
                     onChange={(event) =>
-                      setProject((current) =>
-                        cloneUpdate(current, (draft) => {
-                          draft.analysisSettings.gs.regionFactorZ = Number(event.target.value)
-                        }),
-                      )
+                      updateProject((draft) => {
+                        draft.analysisSettings.gs.regionFactorZ = Number(event.target.value)
+                      })
                     }
                   />
                 </label>
@@ -335,11 +450,9 @@ export default function App() {
                   <select
                     value={project.analysisSettings.gs.groundType}
                     onChange={(event) =>
-                      setProject((current) =>
-                        cloneUpdate(current, (draft) => {
-                          draft.analysisSettings.gs.groundType = Number(event.target.value) as 1 | 2 | 3
-                        }),
-                      )
+                      updateProject((draft) => {
+                        draft.analysisSettings.gs.groundType = Number(event.target.value) as 1 | 2 | 3
+                      })
                     }
                   >
                     <option value="1">第一種</option>
@@ -352,14 +465,12 @@ export default function App() {
                   <select
                     value={project.analysisSettings.gs.mode}
                     onChange={(event) =>
-                      setProject((current) =>
-                        cloneUpdate(current, (draft) => {
-                          draft.analysisSettings.gs.mode = event.target.value as GsMode
-                          draft.method.gs = event.target.value.startsWith('legacy')
-                            ? 'legacy-workbook-compat'
-                            : 'jp-mlit-kokuji-1457-current'
-                        }),
-                      )
+                      updateProject((draft) => {
+                        draft.analysisSettings.gs.mode = event.target.value as GsMode
+                        draft.method.gs = event.target.value.startsWith('legacy')
+                          ? 'legacy-workbook-compat'
+                          : 'jp-mlit-kokuji-1457-current'
+                      })
                     }
                   >
                     <option value="damage-simplified">損傷限界・略算</option>
@@ -374,11 +485,9 @@ export default function App() {
                   <textarea
                     value={project.analysisSettings.gs.groundTypeBasis}
                     onChange={(event) =>
-                      setProject((current) =>
-                        cloneUpdate(current, (draft) => {
-                          draft.analysisSettings.gs.groundTypeBasis = event.target.value
-                        }),
-                      )
+                      updateProject((draft) => {
+                        draft.analysisSettings.gs.groundTypeBasis = event.target.value
+                      })
                     }
                   />
                 </label>
@@ -395,7 +504,7 @@ export default function App() {
               <div className="download-row">
                 <button
                   className="button button-ghost"
-                  onClick={() => downloadTextFile(`${project.project.name}.jiban.json`, serializeProject(project), 'application/json')}
+                  onClick={saveProjectJson}
                 >
                   案件JSON保存
                 </button>
@@ -431,7 +540,7 @@ export default function App() {
                 <label>調査範囲半径 (m)<input min="0" step="1" type="number" value={project.ground.engineeringBedrock.investigationRadiusM ?? ''} onChange={(event) => setBedrockValue('investigationRadiusM', event.target.value === '' ? undefined : Number(event.target.value))} /></label>
               </div>
               <div className="split-view">
-                <Chart ariaLabel="深度別N値" option={nValueChartOption(project.ground)} />
+                <Chart ariaLabel="深度別N値" option={nValueOption} />
                 <div className="metrics-grid">
                   <Metric label="地下水位" value={project.ground.groundwaterDepthM} unit="m" />
                   <Metric label="基盤深さ" value={project.ground.engineeringBedrock.depthM} unit="m" />
@@ -486,7 +595,7 @@ export default function App() {
         {tab === 'gs' ? (
           <div className="content-grid two-column chart-layout">
             <Panel eyebrow="AMPLIFICATION" title="地盤増幅 Gs(T)">
-              <Chart ariaLabel="周期別地盤増幅率" option={gsChartOption(result)} />
+              <Chart ariaLabel="周期別地盤増幅率" option={gsOption} />
             </Panel>
             <Panel eyebrow="RESULT" title="収束・特性値">
               <div className="metrics-grid">
@@ -503,7 +612,7 @@ export default function App() {
               <details><summary>反復履歴 ({result?.gs.iterations.length ?? 0})</summary><pre>{JSON.stringify(result?.gs.iterations ?? [], null, 2)}</pre></details>
             </Panel>
             <Panel eyebrow="SPECTRUM" title="地表加速度応答スペクトル">
-              <Chart ariaLabel="地表および時刻歴の応答スペクトル" option={spectrumChartOption(result)} />
+              <Chart ariaLabel="地表および時刻歴の応答スペクトル" option={spectrumOption} />
             </Panel>
           </div>
         ) : null}
@@ -529,10 +638,10 @@ export default function App() {
                     <option value="gal">gal</option><option value="m/s2">m/s²</option><option value="g">g</option>
                   </select>
                 </label>
-                <label className="button button-ghost file-button inline">motion.csvを開く<input accept=".csv" onChange={onFileChange} type="file" /></label>
+                <label className="button button-ghost file-button inline">motion.csvを開く<input accept=".csv" onChange={onMotionFileChange} type="file" /></label>
                 <button className="button button-ghost" disabled={!motion} onClick={() => motion && downloadTextFile('motion.csv', exportMotionCsv(motion), 'text/csv')}>時刻歴CSV保存</button>
               </div>
-              <Chart ariaLabel="入力加速度時刻歴" option={motionChartOption(motion)} />
+              <Chart ariaLabel="入力加速度時刻歴" option={motionOption} />
             </Panel>
             <Panel eyebrow="METRICS" title="時刻歴指標">
               <div className="metrics-grid"><Metric label="点数" value={motion?.timesS.length ?? 0} /><Metric label="Δt" value={format(result?.motion?.timeStepS, 4)} unit="s" /><Metric label="PGA" value={format(result?.motion?.pgaMps2)} unit="m/s²" /><Metric label="PGV" value={format(result?.motion?.pgvMps)} unit="m/s" /><Metric label="PGD" value={format(result?.motion?.pgdM)} unit="m" /></div>
@@ -546,13 +655,13 @@ export default function App() {
             <div className="report-header"><div><span>案件</span><strong>{project.project.name}</strong></div><div><span>アプリ版</span><strong>{project.appVersion}</strong></div><div><span>計算法</span><strong>{project.method.gs}</strong></div><div><span>状態</span><strong>{result ? '計算済み' : '未計算'}</strong></div><div><span>計算日時</span><strong>{result?.calculatedAt ?? '—'}</strong></div><div><span>入力SHA-256</span><strong className="hash-value">{result?.inputSha256 ?? '—'}</strong></div></div>
             {result ? <div className="report-section page-break"><h3>計算メタデータ</h3><dl className="definition-list"><div><dt>Gs計算法ID</dt><dd>{result.metadata.gsMethodId}</dd></div><div><dt>Vs係数表</dt><dd>{result.metadata.vsCoefficientTableId}</dd></div><div><dt>液状化法ID</dt><dd>{result.metadata.liquefactionMethodId}</dd></div><div><dt>法令確認日</dt><dd>{result.metadata.legalBasisCheckedOn}</dd></div><div><dt>内部単位</dt><dd>m, m/s, m/s², kg/m³, Pa</dd></div></dl></div> : null}
             <div className="report-section page-break"><h3>入力地盤モデル</h3><p>地下水位 GL-{project.ground.groundwaterDepthM} m / 工学的基盤 GL-{project.ground.engineeringBedrock.depthM} m / Vs {project.ground.engineeringBedrock.vsMps} m/s</p><div className="table-wrap"><table><thead><tr><th>層</th><th>深度 m</th><th>土質</th><th>密度 kg/m³</th><th>FC %</th><th>Vs m/s</th><th>出典</th></tr></thead><tbody>{project.ground.layers.map((layer) => <tr key={layer.id}><td>{layer.id}</td><td>{layer.topDepthM}–{layer.bottomDepthM}</td><td>{layer.soilName}</td><td>{layer.densityKgM3}</td><td>{layer.finesPercent ?? '—'}</td><td>{layer.vsMps ?? '推定'}</td><td>{layer.vsSource ?? (layer.vsMps === undefined ? 'estimated' : 'input')}</td></tr>)}</tbody></table></div></div>
-            {result ? <div className="report-section page-break"><h3>地盤増幅とスペクトル</h3><div className="metrics-grid compact"><Metric label="モード" value={result.gs.mode} /><Metric label="収束" value={result.gs.converged ? '収束' : '未収束'} /><Metric label="T1" value={format(result.gs.t1S)} unit="s" /><Metric label="Gs1" value={format(result.gs.gs1)} /></div><Chart ariaLabel="レポート用地盤増幅率" option={gsChartOption(result)} /><details open><summary>反復履歴 ({result.gs.iterations.length})</summary><pre>{JSON.stringify(result.gs.iterations, null, 2)}</pre></details></div> : null}
+            {result ? <div className="report-section page-break"><h3>地盤増幅とスペクトル</h3><div className="metrics-grid compact"><Metric label="モード" value={result.gs.mode} /><Metric label="収束" value={result.gs.converged ? '収束' : '未収束'} /><Metric label="T1" value={format(result.gs.t1S)} unit="s" /><Metric label="Gs1" value={format(result.gs.gs1)} /></div><Chart ariaLabel="レポート用地盤増幅率" option={gsOption} /><details open><summary>反復履歴 ({result.gs.iterations.length})</summary><pre>{JSON.stringify(result.gs.iterations, null, 2)}</pre></details></div> : null}
             {result ? <div className="report-section page-break"><h3>液状化スクリーニング</h3>{result.liquefaction.map((caseResult) => <div className="report-case" key={caseResult.caseId}><h4>{caseResult.peakAccelerationGal} gal / M{caseResult.magnitude}</h4><p>Dcy {format(caseResult.dcyCm, 2)} cm（{caseResult.dcyClass}） / PL {format(caseResult.pl, 2)}（{caseResult.plClass}）</p><div className="table-wrap"><table><thead><tr><th>層</th><th>深度 m</th><th>対象</th><th>N</th><th>Na</th><th>L</th><th>R</th><th>FL</th><th>Dcy cm</th><th>PL寄与</th></tr></thead><tbody>{caseResult.layers.map((layer) => <tr key={layer.layerId}><td>{layer.layerId}</td><td>{layer.topDepthM}–{layer.bottomDepthM}</td><td>{layer.eligible ? '対象' : '対象外'}</td><td>{format(layer.n, 2)}</td><td>{format(layer.correctedN, 2)}</td><td>{format(layer.demandRatio, 3)}</td><td>{format(layer.resistanceRatio, 3)}</td><td>{format(layer.fl, 3)}</td><td>{format(layer.dcyContributionCm, 2)}</td><td>{format(layer.plContribution, 2)}</td></tr>)}</tbody></table></div></div>)}</div> : null}
-            {result?.motion ? <div className="report-section page-break"><h3>時刻歴・5%減衰弾性応答スペクトル</h3><div className="metrics-grid compact"><Metric label="PGA" value={format(result.motion.pgaMps2)} unit="m/s²" /><Metric label="PGV" value={format(result.motion.pgvMps)} unit="m/s" /><Metric label="PGD" value={format(result.motion.pgdM)} unit="m" /><Metric label="Δt" value={format(result.motion.timeStepS, 4)} unit="s" /></div><Chart ariaLabel="レポート用応答スペクトル" option={spectrumChartOption(result)} /></div> : null}
+            {result?.motion ? <div className="report-section page-break"><h3>時刻歴・5%減衰弾性応答スペクトル</h3><div className="metrics-grid compact"><Metric label="PGA" value={format(result.motion.pgaMps2)} unit="m/s²" /><Metric label="PGV" value={format(result.motion.pgvMps)} unit="m/s" /><Metric label="PGD" value={format(result.motion.pgdM)} unit="m" /><Metric label="Δt" value={format(result.motion.timeStepS, 4)} unit="s" /></div><Chart ariaLabel="レポート用応答スペクトル" option={spectrumOption} /></div> : null}
             <div className="report-section"><h3>注意事項</h3><p>本出力は開発・検証版です。専門家レビュー前のため、法適合、設計妥当性、液状化による支障の最終判断を保証しません。</p></div>
             <div className="report-section"><h3>警告・情報</h3><StatusMessages messages={allMessages} /></div>
             <div className="download-row">
-              <button className="button button-primary" disabled={!result} onClick={() => result && downloadTextFile(`${project.project.name}-result.json`, serializeResultBundle(project, result), 'application/json')}>結果JSON</button>
+              <button className="button button-primary" disabled={!result} onClick={() => void saveResultJson()}>結果JSON</button>
               <button className="button button-ghost" disabled={!result} onClick={() => result && downloadTextFile(`${project.project.name}-gs.csv`, exportGsResultCsv(result), 'text/csv')}>Gs明細CSV</button>
               <button className="button button-ghost" disabled={!result} onClick={() => result && downloadTextFile(`${project.project.name}-liquefaction.csv`, exportLiquefactionResultCsv(result), 'text/csv')}>液状化明細CSV</button>
               <button className="button button-ghost" disabled={!result?.motion} onClick={() => result?.motion && downloadTextFile(`${project.project.name}-motion-spectrum.csv`, exportMotionSpectrumCsv(result), 'text/csv')}>応答スペクトルCSV</button>

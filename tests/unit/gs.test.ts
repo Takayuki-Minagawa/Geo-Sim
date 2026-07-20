@@ -10,12 +10,14 @@ import {
   calculateSimplifiedGs,
   calculateSimplifiedGsResult,
   calculateSurfaceSpectrumPoint,
+  createPeriodGrid,
   evaluateLegacyPreciseGs,
   evaluatePreciseGs,
   interpolateModulusCurve,
   legacySoilParameters,
   standardBaseSpectrumMps2,
 } from '../../src/core/gs'
+import { estimateVsMps } from '../../src/core/vs'
 
 const FLAT_CURVE: ModulusReductionPoint[] = [
   { strain: 1e-6, modulusRatio: 1, dampingRatio: 0.1 },
@@ -131,6 +133,28 @@ describe('notification standard spectrum', () => {
   })
 })
 
+describe('period grid', () => {
+  it('includes the default endpoints with exactly 250 rounded points', () => {
+    const periods = createPeriodGrid()
+    expect(periods).toHaveLength(250)
+    expect(periods[0]).toBe(0.02)
+    expect(periods.at(-1)).toBe(5)
+    expect(periods[8]).toBe(0.18)
+  })
+
+  it('rounds accumulated decimal steps and appends a non-divisible maximum', () => {
+    expect(createPeriodGrid(0.1, 0.3, 0.1)).toEqual([0.1, 0.2, 0.3])
+    expect(createPeriodGrid(0.02, 0.055, 0.02)).toEqual([0.02, 0.04, 0.055])
+  })
+
+  it('rejects invalid and excessively large grids', () => {
+    expect(() => createPeriodGrid(0.1, 0, 0.02)).toThrow(RangeError)
+    expect(() => createPeriodGrid(0, 100_001, 1)).toThrow(
+      /period grid exceeds 100,001 points/,
+    )
+  })
+})
+
 describe('precise curve and matrices', () => {
   it('interpolates nonlinear properties on log strain', () => {
     const curve: ModulusReductionPoint[] = [
@@ -152,6 +176,12 @@ describe('precise curve and matrices', () => {
     expect(evaluatePreciseGs(0.8, parameters, 0)).toBeCloseTo(2, 12)
     expect(evaluatePreciseGs(1.2, parameters, 0)).toBeCloseTo(2, 12)
     expect(evaluatePreciseGs(10, parameters, 0)).toBeCloseTo(1, 12)
+  })
+
+  it('rejects the divergent precise-Gs tail when T1 exceeds 25/3 seconds', () => {
+    expect(() =>
+      evaluatePreciseGs(15, { t1S: 10, t2S: 10 / 3, gs1: 2, gs2: 1.5 }, 0),
+    ).toThrow(RangeError)
   })
 
   it('builds a symmetric positive-definite shear-column system', () => {
@@ -177,6 +207,9 @@ describe('current safety precise iteration', () => {
     expect(result.t1S).toBeCloseTo((4 * 20) / 200, 12)
     expect(result.t2S).toBeCloseTo(result.t1S! / 3, 12)
     expect(result.dampingRatio).toBeCloseTo(0.1, 12)
+    expect(result.alpha).toBeCloseTo(0.45, 12)
+    expect(result.gs1).toBeCloseTo(1.6474464579901151, 12)
+    expect(result.gs2).toBeCloseTo(1.0857763300760044, 12)
     expect(result.curve).toHaveLength(3)
     expect(result.curve.every((point) => point.gs >= 1.23)).toBe(true)
     expect(result.iterations.length).toBeGreaterThan(0)
@@ -276,6 +309,33 @@ describe('legacy workbook compatibility policy', () => {
       status: 'fail',
     })
   })
+
+  it('uses the legacy-sheet Vs coefficient table through the legacy Gs entry point', () => {
+    const ground = groundWithCurves()
+    ground.layers = [
+      {
+        ...ground.layers[1]!,
+        topDepthM: 0,
+        bottomDepthM: 10,
+        nValue: 10,
+        vsMps: undefined,
+        vsSource: undefined,
+      },
+    ]
+    ground.engineeringBedrock.depthM = 10
+    ground.engineeringBedrock.investigationRadiusM = 50
+
+    const result = calculateLegacyPreciseGs(
+      ground,
+      settings('legacy-safety-precise'),
+      { periodsS: [0.02] },
+    )
+    const expectedLegacyPeriod = 40 / estimateVsMps(10, 5, 1, 1.1)
+    const regulatoryPeriod = 40 / estimateVsMps(10, 5, 1, 1.086)
+
+    expect(result.elasticPeriodS).toBeCloseTo(expectedLegacyPeriod, 12)
+    expect(result.elasticPeriodS).not.toBeCloseTo(regulatoryPeriod, 8)
+  })
 })
 
 describe('Gs dispatch', () => {
@@ -287,5 +347,34 @@ describe('Gs dispatch', () => {
     expect(dispatched).toEqual(direct)
     expect(dispatched.curve[0]).toMatchObject({ periodS: 0.02, gs: 1.5 })
     expect(dispatched.curve[0]!.baseSaMps2).toBeCloseTo(0.76, 12)
+  })
+
+  it('dispatches safety-simplified with the safety-limit base spectrum', () => {
+    const dispatched = calculateGs(groundWithCurves(), settings('safety-simplified'), {
+      periodsS: [0.02],
+    })
+    expect(dispatched.converged).toBe(true)
+    expect(dispatched.curve[0]).toMatchObject({ periodS: 0.02, gs: 1.5 })
+    expect(dispatched.curve[0]!.baseSaMps2).toBeCloseTo(3.8, 12)
+    expect(dispatched.curve[0]!.surfaceSaMps2).toBeCloseTo(5.7, 12)
+  })
+
+  it('returns a structured error for an unknown runtime mode', () => {
+    const invalidSettings = {
+      ...settings('damage-simplified'),
+      mode: 'future-mode',
+    } as unknown as GsSettings
+
+    const result = calculateGs(groundWithCurves(), invalidSettings, { periodsS: [0.02] })
+
+    expect(result).toMatchObject({
+      mode: 'future-mode',
+      converged: false,
+      curve: [],
+      iterations: [],
+    })
+    expect(result.messages).toContainEqual(
+      expect.objectContaining({ code: 'GS_MODE_UNKNOWN', severity: 'error' }),
+    )
   })
 })

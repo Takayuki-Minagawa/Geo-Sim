@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import Papa from 'papaparse'
 import type { AnalysisResult } from '../../src/domain/types'
 import {
   exportGsResultCsv,
@@ -81,5 +82,21 @@ describe('結果CSV', () => {
     expect(exportGsResultCsv(result)).toContain('\uFEFFperiod_s,gs')
     expect(exportLiquefactionResultCsv(result)).toContain('damage-150gal,150,7,L1')
     expect(exportMotionSpectrumCsv(result)).toContain('1,0.1,0.2,0.3,0.05')
+  })
+
+  it('液状化明細の文字列セルをCSV数式として実行されない形にする', () => {
+    const malicious = structuredClone(result)
+    const caseResult = malicious.liquefaction[0]!
+    const layer = caseResult.layers[0]!
+    caseResult.caseId = '=HYPERLINK("https://example.invalid")' as typeof caseResult.caseId
+    layer.layerId = '+CMD'
+    layer.reason = '@SUM(1+1)'
+
+    const exported = exportLiquefactionResultCsv(malicious)
+    const parsed = Papa.parse<string[]>(exported.replace(/^\uFEFF/, '')).data
+
+    expect(parsed[1]?.[0]).toBe("'=HYPERLINK(\"https://example.invalid\")")
+    expect(parsed[1]?.[3]).toBe("'+CMD")
+    expect(parsed[1]?.[16]).toBe("'@SUM(1+1)")
   })
 })

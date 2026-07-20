@@ -248,8 +248,10 @@ export function evaluatePreciseGs(
     rawGs = gs1
   } else {
     const denominator = 1 / (1.2 * t1S) - 0.1
-    if (Math.abs(denominator) < 1e-12) {
-      throw new RangeError('the precise Gs tail is singular for this T1')
+    if (denominator <= 1e-12) {
+      throw new RangeError(
+        'the precise Gs tail requires T1 to be less than 25/3 seconds',
+      )
     }
     const coefficientA = (gs1 - 1) / denominator
     rawGs = coefficientA / periodS + gs1 - coefficientA / (1.2 * t1S)

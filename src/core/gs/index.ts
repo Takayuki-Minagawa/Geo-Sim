@@ -115,7 +115,8 @@ export function calculateGs(
   settings: GsSettings,
   options: PreciseGsOptions = {},
 ): GsResult {
-  switch (settings.mode) {
+  const runtimeMode = settings.mode as string
+  switch (runtimeMode) {
     case 'damage-simplified':
     case 'safety-simplified':
       return calculateSimplifiedGsResult(
@@ -128,5 +129,21 @@ export function calculateGs(
     case 'legacy-damage-precise':
     case 'legacy-safety-precise':
       return calculateLegacyPreciseGs(ground, settings, options)
+    default:
+      return {
+        mode: settings.mode,
+        converged: false,
+        curve: [],
+        iterations: [],
+        applicability: [],
+        messages: [
+          {
+            code: 'GS_MODE_UNKNOWN',
+            severity: 'error',
+            message: `未対応のGs計算モード「${runtimeMode}」が指定されました。`,
+            path: 'analysisSettings.gs.mode',
+          },
+        ],
+      }
   }
 }

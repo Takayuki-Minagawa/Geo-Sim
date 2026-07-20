@@ -69,6 +69,13 @@ describe('motion validation and SI normalization', () => {
       code: 'MOTION_TOO_LARGE',
       options: { maxPoints: 2 },
     },
+    {
+      label: 'too-short record',
+      timesS: [0],
+      accelerations: [0],
+      code: 'MOTION_TOO_SHORT',
+      options: {},
+    },
   ])('rejects $label', ({ timesS, accelerations, code, options }) => {
     const result = validateMotionRecord(
       { name: 'invalid', accelerationUnit: 'm/s2', timesS, accelerations },
@@ -76,6 +83,26 @@ describe('motion validation and SI normalization', () => {
     )
     expect(result.valid).toBe(false)
     expect(result.messages.map((message) => message.code)).toContain(code)
+  })
+
+  it('rejects an unsupported runtime acceleration unit', () => {
+    const record = {
+      name: 'unsupported unit',
+      accelerationUnit: 'cm/s2',
+      timesS: [0, 0.01],
+      accelerations: [0, 1],
+    } as unknown as MotionRecord
+
+    const result = validateMotionRecord(record)
+
+    expect(result.valid).toBe(false)
+    expect(result.messages).toContainEqual(
+      expect.objectContaining({
+        code: 'MOTION_UNIT_INVALID',
+        severity: 'error',
+        path: 'accelerationUnit',
+      }),
+    )
   })
 
   it('throws one aggregate validation error from end-to-end analysis', () => {
@@ -118,6 +145,32 @@ describe('baseline correction and trapezoidal integration', () => {
     expect(corrected.removedIntercept).toBeCloseTo(0.3, 12)
     expect(corrected.removedSlopePerSecond).toBeCloseTo(0.04, 12)
   })
+
+  it('applies linear baseline correction through end-to-end motion analysis', () => {
+    const times = uniformTimes(1, 100)
+    const result = analyzeMotion(
+      {
+        name: 'affine drift',
+        accelerationUnit: 'm/s2',
+        timesS: times,
+        accelerations: times.map((time) => 0.3 + 0.04 * time),
+      },
+      {
+        integration: { baselineCorrection: 'linear' },
+        periodsS: [0.1],
+      },
+    )
+
+    expect(result.pgaMps2).toBeLessThan(1e-12)
+    expect(result.pgvMps).toBeLessThan(1e-12)
+    expect(result.messages).toContainEqual(
+      expect.objectContaining({ code: 'MOTION_BASELINE_CORRECTED', severity: 'info' }),
+    )
+    expect(
+      result.messages.find((message) => message.code === 'MOTION_BASELINE_CORRECTED')
+        ?.message,
+    ).toContain('一次トレンド')
+  })
 })
 
 describe('motion intensity measures', () => {
@@ -143,6 +196,27 @@ describe('motion intensity measures', () => {
 })
 
 describe('Newmark elastic response spectrum', () => {
+  it('warns when the source time step is coarse for the shortest requested period', () => {
+    const times = uniformTimes(0.2, 10)
+    const result = analyzeMotion(
+      {
+        name: 'coarse record',
+        accelerationUnit: 'm/s2',
+        timesS: times,
+        accelerations: times.map(() => 0),
+      },
+      { periodsS: [0.1] },
+    )
+
+    expect(result.timeStepS).toBeCloseTo(0.02, 12)
+    expect(result.messages).toContainEqual(
+      expect.objectContaining({
+        code: 'MOTION_SPECTRUM_TIME_STEP_COARSE',
+        severity: 'warning',
+      }),
+    )
+  })
+
   it('returns exact zeros for a zero motion and PGA at period zero', () => {
     const times = uniformTimes(2, 200)
     const spectrum = computeElasticResponseSpectrum(

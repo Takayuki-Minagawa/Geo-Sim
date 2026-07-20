@@ -12,6 +12,7 @@ import { calculateOverburdenAtDepth } from './overburden'
 
 export const LEGACY_GRAVITY_GAL = 980
 export const PL_MAX_DEPTH_M = 20
+const DEPTH_TOLERANCE_M = 1e-9
 
 export const DEFAULT_LIQUEFACTION_CASES: readonly LiquefactionCaseSettings[] = [
   { id: 'damage-150gal', peakAccelerationGal: 150, magnitude: 7 },
@@ -412,12 +413,12 @@ function createNormalizedSegments(ground: GroundModel): NormalizedSegment[] {
         boundaries.push(boundary)
       }
     }
-    boundaries.sort((left, right) => left - right)
+    const uniqueBoundaries = uniqueSortedDepths(boundaries)
     const nValue = resolveLayerNValue(layer, ground)
-    const wasSplit = boundaries.length > 2
+    const wasSplit = uniqueBoundaries.length > 2
 
-    return boundaries.slice(0, -1).map((topDepthM, index) => {
-      const bottomDepthM = boundaries[index + 1]!
+    return uniqueBoundaries.slice(0, -1).map((topDepthM, index) => {
+      const bottomDepthM = uniqueBoundaries[index + 1]!
       return {
         sourceLayer: layer,
         sourceLayerIndex,
@@ -447,7 +448,6 @@ function resolveLayerNValue(layer: GroundLayer, ground: GroundModel): number | u
 }
 
 function validateLayerSequence(layers: readonly GroundLayer[]): void {
-  const tolerance = 1e-9
   let previousBottom: number | undefined
 
   for (const layer of layers) {
@@ -459,14 +459,14 @@ function validateLayerSequence(layers: readonly GroundLayer[]): void {
     if (!Number.isFinite(layer.densityKgM3) || layer.densityKgM3 <= 0) {
       throw new RangeError(`層 ${layer.id} の密度が0より大きい有限値ではありません`)
     }
-    if (previousBottom === undefined && Math.abs(layer.topDepthM) > tolerance) {
+    if (previousBottom === undefined && Math.abs(layer.topDepthM) > DEPTH_TOLERANCE_M) {
       throw new RangeError(`最上層 ${layer.id} が GL-0m から始まっていません`)
     }
     if (previousBottom !== undefined) {
-      if (layer.topDepthM < previousBottom - tolerance) {
+      if (layer.topDepthM < previousBottom - DEPTH_TOLERANCE_M) {
         throw new RangeError(`層 ${layer.id} が先行層と重複しています`)
       }
-      if (layer.topDepthM > previousBottom + tolerance) {
+      if (layer.topDepthM > previousBottom + DEPTH_TOLERANCE_M) {
         throw new RangeError(
           `GL-${formatDepth(previousBottom)}m から GL-${formatDepth(layer.topDepthM)}m の間に未定義区間があります`,
         )
@@ -474,6 +474,14 @@ function validateLayerSequence(layers: readonly GroundLayer[]): void {
     }
     previousBottom = layer.bottomDepthM
   }
+}
+
+function uniqueSortedDepths(values: readonly number[]): number[] {
+  const sorted = [...values].sort((left, right) => left - right)
+  return sorted.filter(
+    (value, index) =>
+      index === 0 || Math.abs(value - (sorted[index - 1] as number)) > DEPTH_TOLERANCE_M,
+  )
 }
 
 function createLayerResult(

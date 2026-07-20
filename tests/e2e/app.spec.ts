@@ -158,4 +158,92 @@ test.describe('地盤解析Webアプリ MVP受入', () => {
     await expect(error).toContainText('JSONを解析できません')
     await expect(projectName).toHaveValue('保持される案件名')
   })
+
+  test('計算条件を変更すると既存結果を失効させる', async ({ page }) => {
+    test.slow()
+    await page.goto('/')
+    await page.getByRole('button', { name: '解析を実行', exact: true }).click()
+    await expect(page.getByRole('heading', { name: '地盤増幅 Gs(T)', exact: true })).toBeVisible({
+      timeout: 45_000,
+    })
+
+    await tabButton(page, '案件').click()
+    await page.getByLabel('地域係数 Z').fill('0.7')
+    await tabButton(page, 'レポート').click()
+
+    await expect(page.locator('.report-header').getByText('未計算', { exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: '結果JSON', exact: true })).toBeDisabled()
+  })
+
+  test('不正な案件をJSON保存しようとすると画面に検証エラーを表示する', async ({ page }) => {
+    await page.goto('/')
+    await page.getByLabel('案件名').fill('')
+    await page.getByRole('button', { name: '案件JSON保存', exact: true }).click()
+
+    const error = page.locator('.message-error')
+    await expect(error.getByText('PROJECT_EXPORT_FAILED', { exact: true })).toBeVisible()
+    await expect(error).toContainText('案件JSONがスキーマに適合しません')
+  })
+
+  test('CSVヘッダで種別を判定し、Shift_JISの日本語を保持する', async ({ page }) => {
+    await page.goto('/')
+    await tabButton(page, '時刻歴').click()
+
+    const header = Buffer.from('depth_m,n_value,soil_name\r\n1,5,', 'ascii')
+    const shiftJisSoilName = Buffer.from([0x8d, 0xbb, 0x8e, 0xbf, 0x93, 0x79])
+    const csv = Buffer.concat([header, shiftJisSoilName, Buffer.from('\r\n', 'ascii')])
+    await page.locator('header input[type="file"]').setInputFiles({
+      name: 'N値_layer調査.csv',
+      mimeType: 'text/csv',
+      buffer: csv,
+    })
+
+    await expect(
+      page.locator('.message-info').getByText('FILE_ENCODING_DETECTED', { exact: true }),
+    ).toBeVisible()
+    await tabButton(page, '案件').click()
+    const downloadPromise = page.waitForEvent('download')
+    await page.getByRole('button', { name: '案件JSON保存', exact: true }).click()
+    const download = await downloadPromise
+    const downloadedPath = await download.path()
+    expect(downloadedPath).not.toBeNull()
+    if (!downloadedPath) throw new Error('CSV判定確認用JSONの一時保存先を取得できませんでした')
+    const saved = JSON.parse(await fs.readFile(downloadedPath, 'utf8')) as {
+      ground: { nValues: { depthM: number; n: number; soilName?: string }[] }
+      provenance: { sourceFileName?: string }
+    }
+    expect(saved.ground.nValues).toEqual([{ depthM: 1, n: 5, soilName: '砂質土' }])
+    expect(saved.provenance.sourceFileName).toBe('N値_layer調査.csv')
+
+    await tabButton(page, '時刻歴').click()
+    await page.locator('.motion-import-row input[type="file"]').setInputFiles({
+      name: 'headerless-motion.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from('0,0\n0.01,100\n0.02,0\n', 'utf8'),
+    })
+    await expect(page.locator('.metric').filter({ hasText: '点数' }).locator('strong')).toHaveText(
+      '3',
+    )
+  })
+
+  test('地層CSVを案件へ反映する前に層の連続性を検証する', async ({ page }) => {
+    await page.goto('/')
+    const invalidLayers = [
+      'id,top_depth_m,bottom_depth_m,soil_name,soil_class,geologic_age,density_kg_m3',
+      'L1,0,1,砂,sand,alluvium,1800',
+      'L2,2,20,粘土,clay,alluvium,1700',
+    ].join('\n')
+
+    await page.locator('header input[type="file"]').setInputFiles({
+      name: 'layers.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from(invalidLayers, 'utf8'),
+    })
+
+    const error = page.locator('.message-error')
+    await expect(error.getByText('FILE_IMPORT_FAILED', { exact: true })).toBeVisible()
+    await expect(error).toContainText('上端が前層下端と連続していません')
+    await tabButton(page, '地盤モデル').click()
+    await expect(page.locator('tbody tr')).toHaveCount(5)
+  })
 })

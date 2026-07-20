@@ -18,6 +18,7 @@ import {
   normalizeLiquefactionSegments,
   plDepthWeight,
 } from '../../src/core/liquefaction'
+import { normalizeGroundModel } from '../../src/core/normalization/splitLayers'
 
 const DAMAGE_CASE: LiquefactionCaseSettings = {
   id: 'damage-150gal',
@@ -171,6 +172,18 @@ describe('liquefaction layer eligibility and normalized rows', () => {
     ])
   })
 
+  it('does not create a zero-thickness row when split boundaries coincide', () => {
+    const ground = model(
+      [layer({ id: 'L1', topDepthM: 0, bottomDepthM: 10, nValue: 2 })],
+      { groundwaterDepthM: 5, improvementDepthM: 5 },
+    )
+
+    expect(normalizeLiquefactionSegments(ground)).toEqual([
+      { layerId: 'L1@0-5m', sourceLayerId: 'L1', topDepthM: 0, bottomDepthM: 5 },
+      { layerId: 'L1@5-10m', sourceLayerId: 'L1', topDepthM: 5, bottomDepthM: 10 },
+    ])
+  })
+
   it('applies every eligibility condition and returns per-layer reason messages', () => {
     const ground = model([
       layer({ id: 'eligible', topDepthM: 0, bottomDepthM: 1, nValue: 2 }),
@@ -230,6 +243,19 @@ describe('liquefaction layer eligibility and normalized rows', () => {
     expect(result.layers[1]).toMatchObject({ layerId: 'L1@1-2m', eligible: true })
   })
 
+  it('keeps an explicitly improved layer excluded after ground normalization', () => {
+    const ground = model([
+      layer({ id: 'L1', topDepthM: 0, bottomDepthM: 2, nValue: 2, improved: true }),
+    ])
+
+    const result = calculateLiquefactionCase(normalizeGroundModel(ground).ground, DAMAGE_CASE)
+
+    expect(result.dcyCm).toBe(0)
+    expect(result.layers).toHaveLength(1)
+    expect(result.layers[0]).toMatchObject({ eligible: false, dcyContributionCm: 0 })
+    expect(result.messages.map(({ code }) => code)).toContain('LIQUEFACTION_IMPROVED_LAYER')
+  })
+
   it('uses direct layer N first, then the legacy upper-inclusive interval average', () => {
     const ground = model([layer({ id: 'L1', topDepthM: 0, bottomDepthM: 2, nValue: undefined })])
     ground.nValues = [
@@ -244,6 +270,76 @@ describe('liquefaction layer eligibility and normalized rows', () => {
 
     ground.layers[0]!.nValue = 5
     expect(calculateLiquefactionCase(ground, DAMAGE_CASE).layers[0]?.n).toBe(5)
+  })
+
+  it('uses the same original-layer N average through normalization and refreshes it after CSV replacement', () => {
+    const ground = model(
+      [layer({ id: 'L1', topDepthM: 0, bottomDepthM: 4, nValue: undefined })],
+      { groundwaterDepthM: 2 },
+    )
+    ground.nValues = [
+      { depthM: 1, n: 2 },
+      { depthM: 3, n: 10 },
+    ]
+
+    const direct = calculateLiquefactionCase(ground, DAMAGE_CASE)
+    const normalized = normalizeGroundModel(ground)
+    const afterNormalization = calculateLiquefactionCase(normalized.clippedGround, DAMAGE_CASE)
+
+    expect(direct.layers.map(({ n }) => n)).toEqual([6, 6])
+    expect(afterNormalization.layers.map(({ n }) => n)).toEqual([6, 6])
+    expect(afterNormalization.dcyCm).toBeCloseTo(direct.dcyCm, 12)
+    expect(afterNormalization.pl).toBeCloseTo(direct.pl, 12)
+
+    normalized.clippedGround.nValues = [
+      { depthM: 1, n: 20 },
+      { depthM: 3, n: 30 },
+    ]
+    const afterReplacement = calculateLiquefactionCase(normalized.clippedGround, DAMAGE_CASE)
+    expect(afterReplacement.layers.map(({ n }) => n)).toEqual([25, 25])
+  })
+
+  it('excludes every layer when groundwater is below the complete layer model', () => {
+    const ground = model([layer({ id: 'L1', topDepthM: 0, bottomDepthM: 2, nValue: 2 })], {
+      groundwaterDepthM: 3,
+    })
+
+    const result = calculateLiquefactionCase(ground, DAMAGE_CASE)
+
+    expect(result.dcyCm).toBe(0)
+    expect(result.pl).toBe(0)
+    expect(result.layers.every(({ eligible }) => !eligible)).toBe(true)
+    expect(result.messages.map(({ code }) => code)).toContain('LIQUEFACTION_ABOVE_GROUNDWATER')
+  })
+
+  it('returns LIQUEFACTION_INVALID_LAYER_MODEL for a discontinuous layer model', () => {
+    const ground = model([
+      layer({ id: 'L1', topDepthM: 0, bottomDepthM: 1 }),
+      layer({ id: 'L2', topDepthM: 2, bottomDepthM: 3 }),
+    ])
+
+    const result = calculateLiquefactionCase(ground, DAMAGE_CASE)
+
+    expect(result.layers).toEqual([])
+    expect(result.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'LIQUEFACTION_INVALID_LAYER_MODEL', severity: 'error' }),
+      ]),
+    )
+  })
+
+  it('sets strain and PL contribution to zero for an eligible FL >= 1 layer', () => {
+    const ground = model([layer({ id: 'L1', topDepthM: 0, bottomDepthM: 1, nValue: 15 })])
+
+    const result = calculateLiquefactionCase(ground, DAMAGE_CASE)
+
+    expect(result.layers[0]).toMatchObject({
+      eligible: true,
+      cyclicStrainPercent: 0,
+      dcyContributionCm: 0,
+      plContribution: 0,
+    })
+    expect(result.layers[0]?.fl).toBeGreaterThanOrEqual(1)
   })
 })
 

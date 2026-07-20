@@ -32,6 +32,14 @@ export function analyzeProject(
   onProgress(0.05)
   const normalized = normalizeGroundModel(project.ground)
   onProgress(0.2)
+  const normalizationErrors = normalized.messages.filter(
+    (message) => message.severity === 'error',
+  )
+  if (normalizationErrors.length > 0) {
+    throw new RangeError(
+      `地盤モデルを正規化できません: ${normalizationErrors.map((message) => message.message).join('; ')}`,
+    )
+  }
 
   const coefficientTableId = project.analysisSettings.gs.mode.startsWith('legacy')
     ? 'legacy-sheet'
@@ -42,7 +50,7 @@ export function analyzeProject(
   onProgress(0.62)
 
   const liquefaction = calculateLiquefactionCases(
-    normalized.ground,
+    normalized.clippedGround,
     project.analysisSettings.liquefactionCases,
   )
   onProgress(0.8)
