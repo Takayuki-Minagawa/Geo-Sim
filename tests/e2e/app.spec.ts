@@ -20,6 +20,57 @@ function isLocalOrInline(rawUrl: string): boolean {
 }
 
 test.describe('地盤解析Webアプリ MVP受入', () => {
+  test('ファビコン、全画面テーマ、日英表示、言語連動マニュアルを提供する', async ({ page }) => {
+    await page.goto('/')
+
+    await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', /favicon\.svg$/)
+    await expect(page.locator('html')).toHaveAttribute('lang', 'ja')
+    await expect(page.getByRole('heading', { name: '地盤解析', exact: true })).toBeVisible()
+
+    await page.getByRole('button', { name: /簡易マニュアル/ }).click()
+    const japaneseGuide = page.getByRole('dialog')
+    await expect(japaneseGuide.getByRole('heading', { name: '簡易マニュアル' })).toBeVisible()
+    await expect(japaneseGuide).toContainText('案件を準備')
+    await japaneseGuide.getByRole('button', { name: '閉じる' }).first().click()
+
+    await page.getByRole('button', { name: '表示言語を英語に切り替える' }).click()
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+    await expect(page.getByRole('heading', { name: 'Ground Analysis', exact: true })).toBeVisible()
+    const englishNavigation = page.getByRole('navigation', { name: 'Analysis screens' })
+    await expect(englishNavigation).toBeVisible()
+    const englishScreens = [
+      ['Project', 'Project and analysis settings'],
+      ['Ground model', 'N-values and ground model'],
+      ['Applicability', 'Applicability of the precise method'],
+      ['Amplification', 'Ground amplification Gs(T)'],
+      ['Liquefaction', 'Liquefaction results'],
+      ['Ground motion', 'Acceleration time history'],
+      ['Report', 'Calculation summary and exports'],
+    ] as const
+    for (const [tabLabel, heading] of englishScreens) {
+      await englishNavigation.getByRole('button').filter({ hasText: tabLabel }).click()
+      await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible()
+    }
+
+    await page.getByRole('button', { name: /Quick guide/ }).click()
+    const englishGuide = page.getByRole('dialog')
+    await expect(englishGuide.getByRole('heading', { name: 'Quick guide' })).toBeVisible()
+    await expect(englishGuide).toContainText('Prepare a project')
+    await englishGuide.getByRole('button', { name: 'Close' }).first().click()
+
+    await page.getByRole('button', { name: /Dark/ }).click()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-theme', 'dark')
+    const panelBackground = await page.locator('.panel').first().evaluate(
+      (element) => getComputedStyle(element).backgroundColor,
+    )
+    expect(panelBackground).not.toBe('rgb(255, 255, 255)')
+
+    await page.reload()
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  })
+
   test('7画面を表示し、タブで相互に移動できる', async ({ page }) => {
     await page.goto('/')
 

@@ -19,6 +19,38 @@ describe('App analysis result lifecycle', () => {
   afterEach(() => {
     cleanup()
     vi.clearAllMocks()
+    window.localStorage.clear()
+  })
+
+  it('日本語を既定表示とし、言語・テーマ・簡易マニュアルを切り替える', async () => {
+    render(<App />)
+
+    expect(screen.getByRole('heading', { name: '地盤解析' })).toBeInTheDocument()
+    expect(document.documentElement).toHaveAttribute('lang', 'ja')
+
+    fireEvent.click(screen.getByRole('button', { name: /簡易マニュアル/ }))
+    expect(screen.getByRole('dialog')).toHaveTextContent('案件を準備')
+    fireEvent.click(screen.getAllByRole('button', { name: '閉じる' })[0]!)
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '表示言語を英語に切り替える' }),
+    )
+    await waitFor(() => expect(document.documentElement).toHaveAttribute('lang', 'en'))
+    expect(screen.getByRole('heading', { name: 'Ground Analysis' })).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Analysis screens' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Quick guide/ }))
+    expect(screen.getByRole('dialog')).toHaveTextContent('Prepare a project')
+    fireEvent.click(screen.getAllByRole('button', { name: 'Close' })[0]!)
+
+    fireEvent.click(screen.getByRole('button', { name: /Dark/ }))
+    await waitFor(() => expect(document.documentElement).toHaveAttribute('data-theme', 'dark'))
+    expect(screen.getByText('Ground Analysis').closest('.app-shell')).toHaveAttribute(
+      'data-theme',
+      'dark',
+    )
+    expect(window.localStorage.getItem('geo-sim-locale')).toBe('en')
+    expect(window.localStorage.getItem('geo-sim-theme')).toBe('dark')
   })
 
   it('解析中に入力が変わった場合は古い入力の結果を確定表示しない', async () => {
